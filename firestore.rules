@@ -1,0 +1,53 @@
+rules_version = '2';
+
+// CoNest — Firestore security rules (PRD §5.9, §9).
+// Deploy: firebase deploy --only firestore:rules   (or paste into Console → Firestore → Rules)
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() { return request.auth != null; }
+    function isSelf(uid) { return signedIn() && request.auth.uid == uid; }
+
+    // Public profile. Any signed-in user may read it (discovery needs this), so it must never
+    // hold email/phone — those live only in Firebase Auth.
+    match /users/{uid} {
+      allow read: if signedIn();
+      allow create, update: if isSelf(uid)
+        && request.resource.data.uid == uid
+        && request.resource.data.keys().hasOnly([
+             'uid', 'name', 'age', 'photoUrl', 'occupationType', 'occupation', 'city',
+             'preferredLocalities', 'budgetMin', 'budgetMax', 'moveIn', 'userType', 'bio',
+             'interests', 'diet', 'drinking', 'room', 'profileComplete', 'quizComplete',
+             'createdAt', 'updatedAt'])
+        && (!('age' in request.resource.data) || request.resource.data.age >= 18);
+      allow delete: if false;
+    }
+
+    // Questionnaire answers. Readable by signed-in users so compatibility can be computed on
+    // device for now; move scoring to a Cloud Function and tighten this to isSelf() later.
+    match /lifestyle_answers/{uid} {
+      allow read: if signedIn();
+      allow write: if isSelf(uid) && request.resource.data.userId == uid;
+    }
+
+    // Photos are stored in Firestore (free Spark plan — no Cloud Storage). One JPEG per doc.
+    // Ids are prefixed with the owner's uid, so nobody can claim or overwrite another's photo.
+    match /photos/{photoId} {
+      allow read: if signedIn();
+      allow create: if signedIn()
+        && photoId.matches(request.auth.uid + '_.*')
+        && request.resource.data.ownerId == request.auth.uid
+        && request.resource.data.keys().hasOnly(['ownerId', 'data', 'contentType', 'createdAt'])
+        && request.resource.data.data is bytes
+        && request.resource.data.data.size() < 600 * 1024
+        && request.resource.data.contentType == 'image/jpeg';
+      allow update: if false;
+      allow delete: if signedIn() && resource.data.ownerId == request.auth.uid;
+    }
+
+    // Everything else is closed until its feature (likes, matches, chats, reports) ships.
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
