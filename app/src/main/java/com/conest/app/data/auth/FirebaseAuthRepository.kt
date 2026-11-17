@@ -105,6 +105,21 @@ class FirebaseAuthRepository @Inject constructor(
         scope.launch { runCatching { CredentialManager.create(appContext).clearCredentialState(ClearCredentialStateRequest()) } }
     }
 
+    override fun signedInRecently(): Boolean {
+        if (!isConfigured) return false
+        val last = auth.currentUser?.metadata?.lastSignInTimestamp ?: return false
+        return System.currentTimeMillis() - last < RECENT_LOGIN_WINDOW_MS
+    }
+
+    override suspend fun deleteAccount(): Result<Unit> = guarded {
+        try {
+            auth.currentUser?.delete()?.await()
+        } catch (e: com.google.firebase.auth.FirebaseAuthRecentLoginRequiredException) {
+            throw AuthError("For your security, log out and back in, then delete your account.", e)
+        }
+        scope.launch { runCatching { CredentialManager.create(appContext).clearCredentialState(ClearCredentialStateRequest()) } }
+    }
+
     private suspend fun guarded(block: suspend () -> Unit): Result<Unit> {
         if (!isConfigured) return Result.failure(AuthError("CoNest isn't connected to Firebase yet."))
         return try {
@@ -123,6 +138,10 @@ class FirebaseAuthRepository @Inject constructor(
         e.message.orEmpty().contains("CONFIGURATION_NOT_FOUND") ->
             "Sign-in isn't switched on for CoNest yet. (Enable Authentication in the Firebase console.)"
         else -> friendlyByType(e)
+    }
+
+    private companion object {
+        const val RECENT_LOGIN_WINDOW_MS = 4 * 60 * 1000L
     }
 
     private fun friendlyByType(e: Exception): String = when (e) {

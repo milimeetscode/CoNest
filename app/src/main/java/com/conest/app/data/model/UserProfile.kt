@@ -92,6 +92,8 @@ data class UserProfile(
     val room: RoomDetails? = null,
     val profileComplete: Boolean = false,
     val quizComplete: Boolean = false,
+    /** False when the person has paused their profile — they're hidden from Discover. */
+    val discoverable: Boolean = true,
 )
 
 /** Where a signed-in user is in setup. Drives the post-auth routing. */

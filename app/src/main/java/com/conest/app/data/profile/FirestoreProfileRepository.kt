@@ -61,7 +61,7 @@ class FirestoreProfileRepository @Inject constructor(
         awaitClose { reg.remove() }
     }.distinctUntilChanged()
 
-    override suspend fun saveProfile(profile: UserProfile, photo: Uri?, roomPhotos: List<Uri>): Result<Unit> = runCatching {
+    override suspend fun saveProfile(profile: UserProfile, photo: Uri?, roomPhotos: List<Uri>, isNew: Boolean): Result<Unit> = runCatching {
         // Photos live in Firestore (free Spark plan — no Cloud Storage). Each is its own doc so
         // the profile stays small; photos and profile are committed in one atomic batch, so a
         // failed save never leaves orphaned photos or a profile pointing at missing ones.
@@ -86,8 +86,33 @@ class FirestoreProfileRepository @Inject constructor(
                     ),
                 )
             }
-            batch.set(db.collection(USERS).document(profile.uid), finalProfile.toMap(isNew = true), SetOptions.merge())
+            batch.set(db.collection(USERS).document(profile.uid), finalProfile.toMap(isNew = isNew), SetOptions.merge())
         }.await()
+        Unit
+    }.recoverAsProfileError()
+
+    override suspend fun getProfile(uid: String): UserProfile? {
+        val snap = runCatching { db.collection(USERS).document(uid).get().await() }.getOrNull() ?: return null
+        return if (snap.exists()) snap.toProfile() else null
+    }
+
+    override suspend fun setDiscoverable(uid: String, discoverable: Boolean): Result<Unit> = runCatching {
+        db.collection(USERS).document(uid)
+            .set(mapOf("discoverable" to discoverable, "updatedAt" to FieldValue.serverTimestamp()), SetOptions.merge())
+            .await()
+        Unit
+    }.recoverAsProfileError()
+
+    override suspend fun deleteAccountData(uid: String): Result<Unit> = runCatching {
+        // Everything this person owns. Firestore batches cap at 500 writes, so chunk.
+        val refs = buildList {
+            add(db.collection(USERS).document(uid))
+            add(db.collection(ANSWERS).document(uid))
+            addAll(db.collection(PHOTOS).whereEqualTo("ownerId", uid).get().await().documents.map { it.reference })
+            addAll(db.collection("swipes").whereEqualTo("fromUserId", uid).get().await().documents.map { it.reference })
+            addAll(db.collection("blocks").whereEqualTo("blockerId", uid).get().await().documents.map { it.reference })
+        }
+        refs.chunked(450).forEach { chunk -> db.runBatch { b -> chunk.forEach(b::delete) }.await() }
         Unit
     }.recoverAsProfileError()
 
@@ -211,12 +236,13 @@ private fun UserProfile.toMap(isNew: Boolean): Map<String, Any?> = buildMap {
     )
     put("profileComplete", profileComplete)
     put("quizComplete", quizComplete)
+    put("discoverable", discoverable)
     if (isNew) put("createdAt", FieldValue.serverTimestamp())
     put("updatedAt", FieldValue.serverTimestamp())
 }
 
 @Suppress("UNCHECKED_CAST")
-private fun DocumentSnapshot.toProfile(): UserProfile {
+internal fun DocumentSnapshot.toProfile(): UserProfile {
     val roomMap = get("room") as? Map<String, Any?>
     return UserProfile(
         uid = id,
@@ -246,5 +272,6 @@ private fun DocumentSnapshot.toProfile(): UserProfile {
         },
         profileComplete = getBoolean("profileComplete") ?: false,
         quizComplete = getBoolean("quizComplete") ?: false,
+        discoverable = getBoolean("discoverable") ?: true,
     )
 }

@@ -129,12 +129,12 @@ fun SetupDoneScreen(onContinue: () -> Unit) {
             SplitHeadline("Your nest", "is ready.", maxSize = 48f)
             Spacer(Modifier.height(14.dp))
             Text(
-                "Next, we'll introduce you to people who live the way you do.",
+                "Now meet people who live the way you do. The best fits come first.",
                 style = MaterialTheme.typography.bodyLarge,
                 color = MutedInk,
             )
             Spacer(Modifier.height(30.dp))
-            PrimaryAction("See my profile", onContinue)
+            PrimaryAction("Start exploring", onContinue)
             Spacer(Modifier.height(20.dp))
         }
     }

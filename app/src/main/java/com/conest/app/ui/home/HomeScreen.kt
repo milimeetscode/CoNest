@@ -15,7 +15,6 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
@@ -65,6 +64,8 @@ import java.time.LocalTime
 @Composable
 fun HomeScreen(
     onRetakeQuiz: () -> Unit,
+    onEditProfile: () -> Unit,
+    onOpenSettings: () -> Unit,
     viewModel: HomeViewModel = hiltViewModel(),
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
@@ -78,7 +79,6 @@ fun HomeScreen(
             Modifier
                 .fillMaxSize()
                 .statusBarsPadding()
-                .navigationBarsPadding()
                 .verticalScroll(rememberScrollState())
                 .padding(horizontal = Gutter),
         ) {
@@ -91,11 +91,11 @@ fun HomeScreen(
                 Wordmark(size = 21f)
                 Spacer(Modifier.weight(1f))
                 Text(
-                    "SIGN OUT",
+                    "SETTINGS",
                     style = MaterialTheme.typography.labelSmall,
                     color = Ink,
                     modifier = Modifier
-                        .clickable(role = Role.Button, onClick = viewModel::signOut)
+                        .clickable(role = Role.Button, onClick = onOpenSettings)
                         .padding(vertical = 12.dp, horizontal = 4.dp),
                 )
             }
@@ -110,7 +110,7 @@ fun HomeScreen(
                     color = MutedInk,
                     modifier = Modifier.padding(top = 40.dp),
                 )
-                else -> ProfileSpread(profile, state.answers, onRetakeQuiz)
+                else -> ProfileSpread(profile, state.answers, onRetakeQuiz, onEditProfile)
             }
         }
     }
@@ -118,7 +118,7 @@ fun HomeScreen(
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun ProfileSpread(profile: UserProfile, answers: LifestyleAnswers?, onRetakeQuiz: () -> Unit) {
+private fun ProfileSpread(profile: UserProfile, answers: LifestyleAnswers?, onRetakeQuiz: () -> Unit, onEditProfile: () -> Unit) {
     val greeting = when (LocalTime.now().hour) {
         in 5..11 -> "Good morning"
         in 12..16 -> "Good afternoon"
@@ -133,7 +133,8 @@ private fun ProfileSpread(profile: UserProfile, answers: LifestyleAnswers?, onRe
     Text("$firstName.", style = MaterialTheme.typography.displayMedium.copy(fontSize = 38.sp, fontStyle = FontStyle.Italic), color = com.conest.app.ui.theme.Terracotta)
     Spacer(Modifier.height(12.dp))
     Text(
-        "This is how you'll appear to people in ${profile.city}. Discover opens in the next build.",
+        if (profile.discoverable) "This is how you appear to people in ${profile.city}."
+        else "Your profile is paused, so nobody new can see it. Resume it in Settings.",
         style = MaterialTheme.typography.bodyLarge,
         color = MutedInk,
     )
@@ -260,6 +261,8 @@ private fun ProfileSpread(profile: UserProfile, answers: LifestyleAnswers?, onRe
     }
 
     Spacer(Modifier.height(34.dp))
+    OutlineAction("Edit profile", onEditProfile)
+    Spacer(Modifier.height(10.dp))
     OutlineAction("Retake the lifestyle questions", onRetakeQuiz)
     Spacer(Modifier.height(32.dp))
 }

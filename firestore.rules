@@ -8,6 +8,13 @@ service cloud.firestore {
     function signedIn() { return request.auth != null; }
     function isSelf(uid) { return signedIn() && request.auth.uid == uid; }
 
+    // True when `from` has liked `to`. Evaluated server-side, so nobody can read another
+    // person's swipes — they can only *attempt* a match and be refused.
+    function liked(from, to) {
+      let p = /databases/$(database)/documents/swipes/$(from + '_' + to);
+      return exists(p) && get(p).data.action == 'like';
+    }
+
     // Public profile. Any signed-in user may read it (discovery needs this), so it must never
     // hold email/phone — those live only in Firebase Auth.
     match /users/{uid} {
@@ -18,16 +25,17 @@ service cloud.firestore {
              'uid', 'name', 'age', 'photoUrl', 'occupationType', 'occupation', 'city',
              'preferredLocalities', 'budgetMin', 'budgetMax', 'moveIn', 'userType', 'bio',
              'interests', 'diet', 'drinking', 'room', 'profileComplete', 'quizComplete',
-             'createdAt', 'updatedAt'])
+             'discoverable', 'createdAt', 'updatedAt'])
         && (!('age' in request.resource.data) || request.resource.data.age >= 18);
-      allow delete: if false;
+      allow delete: if isSelf(uid);
     }
 
     // Questionnaire answers. Readable by signed-in users so compatibility can be computed on
     // device for now; move scoring to a Cloud Function and tighten this to isSelf() later.
     match /lifestyle_answers/{uid} {
       allow read: if signedIn();
-      allow write: if isSelf(uid) && request.resource.data.userId == uid;
+      allow create, update: if isSelf(uid) && request.resource.data.userId == uid;
+      allow delete: if isSelf(uid);
     }
 
     // Photos are stored in Firestore (free Spark plan — no Cloud Storage). One JPEG per doc.
@@ -45,7 +53,90 @@ service cloud.firestore {
       allow delete: if signedIn() && resource.data.ownerId == request.auth.uid;
     }
 
-    // Everything else is closed until its feature (likes, matches, chats, reports) ships.
+    // Likes and passes. Immutable once made (a pass is final; "hide" is a pass). Private to the
+    // person who swiped.
+    match /swipes/{swipeId} {
+      allow read: if signedIn() && resource.data.fromUserId == request.auth.uid;
+      allow create: if signedIn()
+        && request.resource.data.fromUserId == request.auth.uid
+        && swipeId == request.auth.uid + '_' + request.resource.data.toUserId
+        && request.resource.data.toUserId != request.auth.uid
+        && request.resource.data.action in ['like', 'pass']
+        && request.resource.data.keys().hasOnly(['fromUserId', 'toUserId', 'action', 'createdAt']);
+      allow update: if false;
+      allow delete: if signedIn() && resource.data.fromUserId == request.auth.uid;
+    }
+
+    // A match exists only if both people liked each other. Its id is the two uids, sorted,
+    // so there can never be two matches (or two chats) for the same pair.
+    match /matches/{matchId} {
+      allow read: if signedIn() && request.auth.uid in resource.data.userIds;
+
+      allow create: if signedIn()
+        && request.resource.data.keys().hasOnly(['userIds', 'status', 'createdAt'])
+        && request.resource.data.userIds.size() == 2
+        && request.auth.uid in request.resource.data.userIds
+        && request.resource.data.userIds[0] < request.resource.data.userIds[1]
+        && matchId == request.resource.data.userIds[0] + '_' + request.resource.data.userIds[1]
+        && request.resource.data.status == 'active'
+        && liked(request.resource.data.userIds[0], request.resource.data.userIds[1])
+        && liked(request.resource.data.userIds[1], request.resource.data.userIds[0]);
+
+      allow update: if signedIn()
+        && request.auth.uid in resource.data.userIds
+        && request.resource.data.userIds == resource.data.userIds
+        && request.resource.data.diff(resource.data).affectedKeys()
+             .hasOnly(['lastMessage', 'lastMessageAt', 'lastSenderId', 'lastRead', 'status', 'blockedBy'])
+        // status changes: either participant may block; only the blocker may unblock
+        && (!request.resource.data.diff(resource.data).affectedKeys().hasAny(['status', 'blockedBy'])
+            || (resource.data.status == 'active' && request.resource.data.status == 'blocked'
+                && request.resource.data.blockedBy == request.auth.uid)
+            || (resource.data.status == 'blocked' && resource.data.blockedBy == request.auth.uid
+                && request.resource.data.status == 'active'))
+        // no new messages once blocked
+        && (resource.data.status == 'active'
+            || !request.resource.data.diff(resource.data).affectedKeys().hasAny(['lastMessage', 'lastMessageAt', 'lastSenderId']));
+
+      allow delete: if false;
+
+      match /messages/{messageId} {
+        allow read: if signedIn()
+          && request.auth.uid in get(/databases/$(database)/documents/matches/$(matchId)).data.userIds;
+        allow create: if signedIn()
+          && request.resource.data.senderId == request.auth.uid
+          && request.auth.uid in get(/databases/$(database)/documents/matches/$(matchId)).data.userIds
+          && get(/databases/$(database)/documents/matches/$(matchId)).data.status == 'active'
+          && request.resource.data.keys().hasOnly(['senderId', 'text', 'type', 'createdAt'])
+          && request.resource.data.text is string
+          && request.resource.data.text.size() > 0
+          && request.resource.data.text.size() <= 2000;
+        allow update, delete: if false;
+      }
+    }
+
+    // Blocks hide each person from the other. Visible to both, so Discover can exclude in
+    // both directions; only the blocker can create or lift one.
+    match /blocks/{blockId} {
+      allow read: if signedIn()
+        && (resource.data.blockerId == request.auth.uid || resource.data.blockedId == request.auth.uid);
+      allow create: if signedIn()
+        && request.resource.data.blockerId == request.auth.uid
+        && blockId == request.auth.uid + '_' + request.resource.data.blockedId
+        && request.resource.data.keys().hasOnly(['blockerId', 'blockedId', 'createdAt']);
+      allow delete: if signedIn() && resource.data.blockerId == request.auth.uid;
+    }
+
+    // Reports are write-only from the app; reviewed from the console.
+    match /reports/{reportId} {
+      allow create: if signedIn()
+        && request.resource.data.reportedBy == request.auth.uid
+        && request.resource.data.reportedUserId != request.auth.uid
+        && request.resource.data.keys().hasOnly(['reportedBy', 'reportedUserId', 'reason', 'description', 'status', 'createdAt'])
+        && request.resource.data.status == 'open';
+      allow read, update, delete: if false;
+    }
+
+    // Everything else is closed.
     match /{document=**} {
       allow read, write: if false;
     }

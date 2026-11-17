@@ -112,7 +112,11 @@ fun OnboardingScreen(
         onBack = goBack,
         blocker = state.blocker,
         error = state.error,
-        actionLabel = if (state.isLast) "Save profile" else "Continue",
+        actionLabel = when {
+            !state.isLast -> "Continue"
+            state.editing -> "Save changes"
+            else -> "Save profile"
+        },
         loading = state.saving,
         onAction = { viewModel.next(onProfileSaved) },
     ) {
@@ -305,11 +309,11 @@ private fun BasicsStep(draft: OnboardingDraft, edit: ((OnboardingDraft) -> Onboa
 
     Row(verticalAlignment = Alignment.Bottom) {
         PhotoSlot(
-            model = draft.photo,
+            model = draft.photo ?: draft.existingPhotoUrl,
             onClick = pick,
             modifier = Modifier.width(150.dp),
             emptyLabel = "Add a photo",
-            onClickLabel = if (draft.photo == null) "Add a photo" else "Change photo",
+            onClickLabel = if (draft.photo == null && draft.existingPhotoUrl == null) "Add a photo" else "Change photo",
         )
         Spacer(Modifier.width(18.dp))
         Column(Modifier.padding(bottom = 4.dp)) {
@@ -321,7 +325,7 @@ private fun BasicsStep(draft: OnboardingDraft, edit: ((OnboardingDraft) -> Onboa
                 lineHeight = 19.sp,
                 color = MutedInk,
             )
-            if (draft.photo != null) {
+            if (draft.photo != null || draft.existingPhotoUrl != null) {
                 Spacer(Modifier.height(10.dp))
                 Text(
                     "CHANGE",
@@ -476,7 +480,9 @@ private fun RoomStep(draft: OnboardingDraft, edit: ((OnboardingDraft) -> Onboard
     val picker = rememberLauncherForActivityResult(
         ActivityResultContracts.PickMultipleVisualMedia(OnboardingUiState.MAX_ROOM_PHOTOS),
     ) { uris ->
-        if (uris.isNotEmpty()) edit { d -> d.copy(roomPhotos = (d.roomPhotos + uris).distinct().take(OnboardingUiState.MAX_ROOM_PHOTOS)) }
+        if (uris.isNotEmpty()) edit { d ->
+            d.copy(roomPhotos = (d.roomPhotos + uris).distinct().take(OnboardingUiState.MAX_ROOM_PHOTOS - d.existingRoomPhotos.size))
+        }
     }
 
     StepIntro("The room", "Tell us about", "the room.", "The basics people ask first. You can add more detail in conversation.")
@@ -504,9 +510,11 @@ private fun RoomStep(draft: OnboardingDraft, edit: ((OnboardingDraft) -> Onboard
     Text("For this room alone, before bills.", style = MaterialTheme.typography.bodyMedium.copy(fontSize = 13.sp), color = MutedInk)
 
     Gap(32)
-    FieldLabel("Photos of the room", hint = "${draft.roomPhotos.size} / ${OnboardingUiState.MAX_ROOM_PHOTOS}")
+    val photoCount = draft.existingRoomPhotos.size + draft.roomPhotos.size
+    FieldLabel("Photos of the room", hint = "$photoCount / ${OnboardingUiState.MAX_ROOM_PHOTOS}")
     Spacer(Modifier.height(12.dp))
-    val slots = (draft.roomPhotos.map<android.net.Uri, android.net.Uri?> { it } + listOf(null))
+    // Saved photos (URLs) first, then newly picked ones (local URIs), then an empty slot.
+    val slots: List<Any?> = (draft.existingRoomPhotos + draft.roomPhotos + listOf(null))
         .take(OnboardingUiState.MAX_ROOM_PHOTOS)
     slots.chunked(2).forEach { row ->
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -520,7 +528,10 @@ private fun RoomStep(draft: OnboardingDraft, edit: ((OnboardingDraft) -> Onboard
                         if (uri == null) {
                             picker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
                         } else {
-                            edit { d -> d.copy(roomPhotos = d.roomPhotos - uri) }
+                            edit { d ->
+                                if (uri is String) d.copy(existingRoomPhotos = d.existingRoomPhotos - uri)
+                                else d.copy(roomPhotos = d.roomPhotos - (uri as android.net.Uri))
+                            }
                         }
                     },
                     modifier = Modifier.weight(1f),
@@ -531,7 +542,7 @@ private fun RoomStep(draft: OnboardingDraft, edit: ((OnboardingDraft) -> Onboard
         Spacer(Modifier.height(10.dp))
     }
     Text(
-        if (draft.roomPhotos.isEmpty()) "Optional, but rooms with photos get far more interest." else "Tap a photo to remove it.",
+        if (photoCount == 0) "Optional, but rooms with photos get far more interest." else "Tap a photo to remove it.",
         style = MaterialTheme.typography.bodyMedium.copy(fontSize = 13.sp),
         color = MutedInk,
     )

@@ -1,6 +1,7 @@
 package com.conest.app.ui.onboarding
 
 import android.net.Uri
+import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.conest.app.data.auth.AuthRepository
@@ -41,6 +42,9 @@ data class OnboardingDraft(
     val furnishing: Furnishing? = null,
     val rent: Int = 15_000,
     val roomPhotos: List<Uri> = emptyList(),
+    /** Already-saved photos (edit mode): kept unless replaced or removed. */
+    val existingPhotoUrl: String? = null,
+    val existingRoomPhotos: List<String> = emptyList(),
     val bio: String = "",
     val interests: List<String> = emptyList(),
     val diet: Diet? = null,
@@ -52,6 +56,8 @@ data class OnboardingUiState(
     val draft: OnboardingDraft = OnboardingDraft(),
     val saving: Boolean = false,
     val error: String? = null,
+    /** Editing an existing profile rather than creating one. */
+    val editing: Boolean = false,
 ) {
     val steps: List<OnboardingStep>
         get() = OnboardingStep.entries.filter { it != OnboardingStep.Room || draft.userType == UserType.HasRoom }
@@ -64,7 +70,7 @@ data class OnboardingUiState(
             when (step) {
                 OnboardingStep.Intent -> if (userType == null) "Choose one to continue" else null
                 OnboardingStep.Basics -> when {
-                    photo == null -> "Add a photo of yourself"
+                    photo == null && existingPhotoUrl == null -> "Add a photo of yourself"
                     name.isBlank() -> "Add your name"
                     age.toIntOrNull() == null -> "Add your age"
                     age.toInt() !in 18..99 -> "You need to be 18 or over to use CoNest"
@@ -99,18 +105,31 @@ data class OnboardingUiState(
 
 @HiltViewModel
 class OnboardingViewModel @Inject constructor(
+    savedState: SavedStateHandle,
     private val auth: AuthRepository,
     private val profiles: ProfileRepository,
 ) : ViewModel() {
 
-    private val _state = MutableStateFlow(OnboardingUiState())
+    private val editing = savedState.get<String>("mode") == "edit"
+    private val _state = MutableStateFlow(OnboardingUiState(editing = editing))
     val state: StateFlow<OnboardingUiState> = _state.asStateFlow()
 
+    /** The saved profile being edited; keeps fields this flow doesn't touch (quiz, pause). */
+    private var original: UserProfile? = null
+
     init {
-        // Google accounts arrive with a name — save the person typing it again.
         viewModelScope.launch {
-            val name = auth.currentUser.first()?.displayName.orEmpty()
-            if (name.isNotBlank()) edit { if (it.name.isBlank()) it.copy(name = name) else it }
+            val user = auth.currentUser.first() ?: return@launch
+            if (editing) {
+                profiles.getProfile(user.uid)?.let { p ->
+                    original = p
+                    _state.update { it.copy(draft = p.toDraft()) }
+                }
+            } else {
+                // Google accounts arrive with a name; save the person typing it again.
+                val name = user.displayName.orEmpty()
+                if (name.isNotBlank()) edit { if (it.name.isBlank()) it.copy(name = name) else it }
+            }
         }
     }
 
@@ -178,11 +197,13 @@ class OnboardingViewModel @Inject constructor(
             interests = d.interests,
             diet = d.diet,
             drinking = d.drinking,
-            room = if (hasRoom) RoomDetails(d.roomType, d.furnishing, d.localities.firstOrNull().orEmpty(), d.rent) else null,
+            photoUrl = d.existingPhotoUrl,
+            room = if (hasRoom) RoomDetails(d.roomType, d.furnishing, d.localities.firstOrNull().orEmpty(), d.rent, d.existingRoomPhotos) else null,
             profileComplete = true,
-            quizComplete = false,
+            quizComplete = original?.quizComplete ?: false,
+            discoverable = original?.discoverable ?: true,
         )
-        profiles.saveProfile(profile, d.photo, if (hasRoom) d.roomPhotos else emptyList())
+        profiles.saveProfile(profile, d.photo, if (hasRoom) d.roomPhotos else emptyList(), isNew = !editing)
             .onSuccess {
                 _state.update { it.copy(saving = false) }
                 onSaved()
@@ -192,3 +213,25 @@ class OnboardingViewModel @Inject constructor(
             }
     }
 }
+
+private fun UserProfile.toDraft() = OnboardingDraft(
+    userType = userType,
+    name = name,
+    age = if (age > 0) age.toString() else "",
+    occupationType = occupationType,
+    occupation = occupation,
+    city = city,
+    localities = preferredLocalities,
+    budgetMin = if (userType == UserType.HasRoom || budgetMin <= 0) 8_000 else budgetMin,
+    budgetMax = if (userType == UserType.HasRoom || budgetMax <= 0) 20_000 else budgetMax,
+    moveIn = moveIn,
+    roomType = room?.type,
+    furnishing = room?.furnishing,
+    rent = room?.rent?.takeIf { it > 0 } ?: 15_000,
+    bio = bio,
+    interests = interests,
+    diet = diet,
+    drinking = drinking,
+    existingPhotoUrl = photoUrl,
+    existingRoomPhotos = room?.photoUrls.orEmpty(),
+)

@@ -31,4 +31,13 @@ interface AuthRepository {
 
     suspend fun sendPasswordReset(email: String): Result<Unit>
     fun signOut()
+
+    /**
+     * Firebase only lets an account delete itself shortly after signing in. Check this first,
+     * so we never wipe someone's data and then fail to remove the account itself.
+     */
+    fun signedInRecently(): Boolean
+
+    /** Deletes the Firebase Auth account. Call after the person's data is removed. */
+    suspend fun deleteAccount(): Result<Unit>
 }
